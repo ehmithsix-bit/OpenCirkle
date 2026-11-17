@@ -1,0 +1,76 @@
+name: Build OpenCirkle APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract OpenCirkle ZIP
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_FILE=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*.zip' -print -quit)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No ZIP file found in repository root."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/opencirkle-project"
+          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/opencirkle-project"
+          PACKAGE_JSON=$(find "$RUNNER_TEMP/opencirkle-project" -type f -name package.json -not -path '*/node_modules/*' -print -quit)
+          if [ -z "$PACKAGE_JSON" ]; then
+            echo "package.json was not found inside the ZIP."
+            exit 1
+          fi
+          PROJECT_DIR=$(dirname "$PACKAGE_JSON")
+          if [ ! -d "$PROJECT_DIR/android" ]; then
+            echo "Android project folder was not found beside package.json."
+            exit 1
+          fi
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Gradle (ZIP has no Gradle Wrapper)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install npm dependencies
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: npm install --no-audit --no-fund
+
+      - name: Build React app
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: npm run build
+
+      - name: Sync Capacitor Android
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: ${{ steps.project.outputs.dir }}/android
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenCirkle-APK
+          path: ${{ steps.project.outputs.dir }}/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
